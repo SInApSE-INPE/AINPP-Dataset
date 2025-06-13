@@ -140,6 +140,12 @@ if 'merged_ds' in locals():
     plt.show()
 ```
 
+Belew is presented an example plot of all variables:
+
+![alt text](./images/ainpp_south_america_2018010105.v01.png "Example plot of all variables")
+
+
+
 ### 4.3. Spatial and Temporal Analysis
 
 You can perform various analyses, such as calculating the difference between products or the average precipitation over an area.
