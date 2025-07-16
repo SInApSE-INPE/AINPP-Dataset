@@ -25,7 +25,7 @@ The final dataset is a composition of the following primary sources:
     * **GSMaP NOW:** Provides a near-real-time precipitation estimate (nowcasting) with zero latency.
     * **GSMaP NRT:** "Near-Real-Time" version, with more refined processing than the NOW version and a latency of a few hours.
     * **GSMaP MVK:** The final, reanalyzed, and gauge-corrected version, considered the most accurate but with the highest latency.
-* **MERGE:** A product from CPTEC/INPE that combines satellite estimates (GOES) with rain gauge data, focused on South America.
+* **MERGE:** A product from CPTEC/INPE that combines satellite estimates (GOES) with rain gauge data, focused on Latin America.
 * **Rain Gauge Data:** These are the direct "ground truth" observations from the CPTEC/INPE network of weather stations. Although very accurate, they are spatially sparse.
 
 ## 3. Processing Methodology
@@ -35,7 +35,7 @@ The Python script executes a series of steps for each hour in the defined time r
 1.  **Data Acquisition:** For each hour, the script constructs the expected file paths for each data product using predefined templates. It then locates the corresponding files in the storage system.
 
 2.  **Individual Processing:** Each file type is read and pre-processed:
-    * **NetCDF (IMERG, GSMaP MVK):** Files are opened with `xarray`, variables of interest are renamed to a standard (`imerg_early`, `gsmap_mvk`), and the data is clipped to the South American area of interest (`lat: -55° to 33°`, `lon: -120° to -23°`).
+    * **NetCDF (IMERG, GSMaP MVK):** Files are opened with `xarray`, variables of interest are renamed to a standard (`imerg_early`, `gsmap_mvk`), and the data is clipped to the Latin American area of interest (`lat: -55° to 33°`, `lon: -120° to -23°`).
     * **GRIB (MERGE):** The file is read using `xarray` with the `cfgrib` engine. The longitude, originally in 0-360 format, is converted to the standard -180 to 180.
     * **Gzipped Binary (GSMaP NRT/NOW):** These `dat.gz` files are read as binary data, reshaped to their original 2D matrix, and reordered to align with the standard longitude grid.
     * **Text (Rain Gauge):** The text file is read with `pandas`, filtered for the hour of interest, and the latitude, longitude, and precipitation data are extracted.
