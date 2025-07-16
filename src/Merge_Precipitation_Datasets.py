@@ -8,21 +8,58 @@ from string import Template
 import numpy as np
 import pandas as pd
 import xarray as xr
-from scipy.interpolate import griddata
 
 # --- 1. CONFIGURATION ---
 # Define area of interest and time period.
-LAT_MIN, LAT_MAX = -55.0, 13.0
-LON_MIN, LON_MAX = -83.0, -33.0
-START_DATETIME_STR = "2018-01-01 00:00"
-END_DATETIME_STR = "2024-12-31-23:00"  # Example: process 6 hours
-OUTPUT_PATH = "path/to/output/directory"  # Change to your desired output path
+LAT_MIN, LAT_MAX = -55.0, 33.0
+LON_MIN, LON_MAX = -120.0, -23.0
+LAT_RES = 0.1  # Latitude resolution in degrees
+LON_RES = 0.1  # Longitude resolution in degrees
+NUM_LAT = int((LAT_MAX - LAT_MIN) / LAT_RES)
+NUM_LON = int((LON_MAX - LON_MIN) / LON_RES)
+START_DATETIME_STR = "2024-01-01 00:00"
+END_DATETIME_STR = "2024-12-31 23:00"  # Example: process 6 hours
+OUTPUT_PATH = "/ainpp/benchmarks/latin_america"  # Change to your desired output path
 BASE_PATH_IMERG_EARLY = "path/to/imerg/early/data"  # Change to your IMERG early data path
 BASE_PATH_GSMAP_NRT = "path/to/gsmap/nrt/data"  # Change to your GSMaP NRT data path
 BASE_PATH_GSMAP_NOW = "path/to/gsmap/now/data"  # Change to your GSMaP NOW data path
 BASE_PATH_GSMAP_MVK = "path/to/gsmap/mvk/data"  # Change to your GSMaP MVK data path
 BASE_PATH_CPTEC_MERGE = "path/to/cptec/merge/data"  # Change to your CPTEC merge data path
 BASE_PATH_RAIN_GAUGE = "path/to/rain/gauge/data"  # Change to your rain gauge data path
+NETCDF_ATTRS = {
+    "title": "Latin America AINPP Dataset – Hourly Multi-Source Precipitation (GSMaP, IMERG, MERGE & Rain Gauge)",
+    "description": "Hourly gridded precipitation over Latin America obtained from four satellite products (GSMaP-NOW, GSMaP-NRT, GSMaP-MVK, IMERG-Final), one blended product (MERGE) and an interpolated rain-gauge field derived from from national and state networks (CPTEC/INPE, INMET, ANA, CEMADEN, FUNCEME, AESA, EMPARN, ITEP-LAMEPE, DHME, CMRH, SEMARH/DHN, COMET, INEMA, CEMIG-SIMGE, SEAG, SIMEPAR, CIRAM, IAC). All sources are re-projected to a common 0.10° × 0.10° grid covering 55°S – 33°N and 120°W – 23 °W. Files are delivered in Binary, NetCDF-4 and ASCII format.",
+    "collection_type": "cube",
+    "keywords": "precipitation, rainfall, satellite, gauge, GSMaP, IMERG, CPTEC",
+    "Conventions": "CF-1.8",
+    "institution": "AINPP",
+    "source": "GSMaP_NOW v3, GSMaP_NRT v7, GSMaP_MVK v7, IMERG Final V07, CPTEC-MERGE 0.25°, in-situ gauge network (CPTEC/INPE; INMET; ANA; CEMADEN; FUNCEME/CE; AESA/PB; EMPARN/RN; ITEP/LAMEPE/PE; DHME/PI; CMRH/SE; SEMARH/DHN/AL; COMET/RJ; INEMA/BA; CEMIG-SIMGE/MG; SEAG/ES; SIMEPAR/PR; CIRAM/SC; IAC/SP)",
+    "doi": "null",
+    "license": "CC-BY-4.0",
+    "product_version": "1.0",
+    "n_stations": None,
+    "x": 970,
+    "y": 880,
+    "NW_lat": 33.0,
+    "NW_lon": -120.0,
+    "SE_lat": -55.0,
+    "NW_lat": 33.0,
+    "dy": 0.1,
+    "dx": 0.1,
+    "subsatellite_longitude": "null",
+    "orbital_slot": "null", 
+    "platform_ID": "null",
+    "scene_id": "Latin America",
+    "time_coverage_end": "2024-01-01T00:00:00Z",
+    "time_coverage_start": "2024-12-31T23:00:00Z",
+    "aggregation": "60 min",
+    "dataset_name": "precip_latam_ainpp_hourly",
+    "sector": "null", 
+    "geospatial_lat_units": "degrees_north",
+    "geospatial_lon_units": "degrees_east",
+    "temporal_resolution": "hourly",
+    "acknowledgement": "WMO, JAXA, NASA, INPE, CEMADEN, FUNCEME, AESA, EMPARN, ITEP, DHME, CMRH, SEMARH, COMET, INEMA, CEMIG, SEAG, SIMEPAR, CIRAM, IAC",
+}
 
 # For optimization, set the number of parallel processes.
 # Using 'None' will use all available CPU cores.
@@ -116,13 +153,36 @@ def process_rain_gauge(filepath: str, target_time: datetime.datetime, lat_slice:
 
         if df_filtered.empty:
             return None
-        points = df_filtered[['lon', 'lat']].to_numpy()
-        values = df_filtered['r'].to_numpy()
+        
+        lons = df_filtered['lon'].to_numpy()
+        lats = df_filtered['lat'].to_numpy()
+        rain = df_filtered['r'].to_numpy()
+        
+        lat_idx = ((lats - lat_slice.start) / LAT_RES).astype(int)
+        lon_idx = ((lons - lon_slice.start) / LON_RES).astype(int)
+
+        mask = (
+            (lat_idx >= 0) & (lat_idx < NUM_LAT) &
+            (lon_idx >= 0) & (lon_idx < NUM_LON)
+        )
+        flat_idx = lat_idx[mask] * NUM_LON + lon_idx[mask]
+        rain_vals = rain[mask]
+
+        raingauge_sum = np.bincount(flat_idx, weights=rain_vals, minlength=NUM_LAT * NUM_LON)
+        raingauge_count = np.bincount(flat_idx, minlength=NUM_LAT * NUM_LON)
+
+        raingauge_sum = raingauge_sum.reshape(NUM_LAT, NUM_LON)
+        raingauge_count = raingauge_count.reshape(NUM_LAT, NUM_LON)
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            interp_rain = raingauge_sum / raingauge_count
+        interp_rain[raingauge_count == 0] = np.nan
+
         grid_lat = np.arange(lat_slice.start, lat_slice.stop, 0.1)
         grid_lon = np.arange(lon_slice.start, lon_slice.stop, 0.1)
-        lon_mesh, lat_mesh = np.meshgrid(grid_lon, grid_lat)
-        interp_rain = griddata(points, values, (lon_mesh, lat_mesh), method="nearest", fill_value=np.nan)
+
         ds = xr.Dataset({"rain_gauge": (["lat", "lon"], interp_rain)}, coords={"lat": grid_lat, "lon": grid_lon})
+        ds['n_stations'] = (["lat", "lon"], raingauge_count.reshape(NUM_LAT, NUM_LON))
         return ds
     except Exception as e:
         print(f"Error processing rain gauge data {filepath}: {e}")
@@ -166,7 +226,10 @@ def process_single_timestamp(target_time: datetime.datetime):
 
     lat_out = np.arange(LAT_MIN, LAT_MAX, 0.1)
     lon_out = np.arange(LON_MIN, LON_MAX, 0.1)
-    target_grid = xr.Dataset(coords={"lat": lat_out, "lon": lon_out})
+    target_grid = xr.Dataset(coords={
+        'lat': lat_out,
+        'lon': lon_out
+    })
     regridded_datasets = [ds.interp_like(target_grid, method='linear') for ds in loaded_datasets]
     merged_ds = xr.merge(regridded_datasets, compat='override')
 
@@ -176,7 +239,9 @@ def process_single_timestamp(target_time: datetime.datetime):
                                    'valid_time', 'Time'] if var in merged_ds]
     if vars_to_drop:
         merged_ds = merged_ds.drop_vars(vars_to_drop)
-
+    merged_ds = merged_ds.expand_dims('time')
+    attrs = NETCDF_ATTRS.copy()
+    merged_ds.attrs.update(attrs)
     output_path = f"{OUTPUT_PATH}/{target_time.strftime('%Y')}/{target_time.strftime('%m')}/{target_time.strftime('%d')}"
     os.makedirs(output_path, exist_ok=True)
     output_filename = f"{output_path}/ainpp_south_america_{target_time.strftime('%Y%m%d%H')}.v01.nc"
