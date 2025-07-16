@@ -35,15 +35,13 @@ The Python script executes a series of steps for each hour in the defined time r
 1.  **Data Acquisition:** For each hour, the script constructs the expected file paths for each data product using predefined templates. It then locates the corresponding files in the storage system.
 
 2.  **Individual Processing:** Each file type is read and pre-processed:
-    * **NetCDF (IMERG, GSMaP MVK):** Files are opened with `xarray`, variables of interest are renamed to a standard (`imerg_early`, `gsmap_mvk`), and the data is clipped to the South American area of interest (`lat: -55° to 13°`, `lon: -83° to -33°`).
+    * **NetCDF (IMERG, GSMaP MVK):** Files are opened with `xarray`, variables of interest are renamed to a standard (`imerg_early`, `gsmap_mvk`), and the data is clipped to the South American area of interest (`lat: -55° to 33°`, `lon: -120° to -23°`).
     * **GRIB (MERGE):** The file is read using `xarray` with the `cfgrib` engine. The longitude, originally in 0-360 format, is converted to the standard -180 to 180.
     * **Gzipped Binary (GSMaP NRT/NOW):** These `dat.gz` files are read as binary data, reshaped to their original 2D matrix, and reordered to align with the standard longitude grid.
     * **Text (Rain Gauge):** The text file is read with `pandas`, filtered for the hour of interest, and the latitude, longitude, and precipitation data are extracted.
 
 3.  **Rain Gauge Data Interpolation:**
-    Since rain gauge data are point-based (each at a specific coordinate), they must be interpolated onto the same regular grid as the other products. The method used was **Nearest Neighbor** via the `griddata` function from the `scipy` library.
-    * **How it works:** For each cell in the output grid (0.1° x 0.1°), the algorithm identifies the geographically closest rain gauge station and assigns that station's precipitation value to the grid cell.
-    * **Why this method?** It was chosen for its simplicity and robustness. It does not create artificial precipitation values between stations, which could happen with methods like linear or cubic interpolation, especially in areas with sparse stations. It preserves the original measured values, assigning them to their area of greatest influence.
+    Since rain gauge data are point-based (each at a specific coordinate), they must be interpolated onto the same regular grid as the other products. The method used was the average precipitation of each 10km X 10km area.
 
 4.  **Regridding to a Common Grid:**
     Although most products have a native resolution of 0.1°, slight differences in their grids can exist. To ensure a perfect merge, all processed datasets are interpolated to a single, standardized target grid (0.1° resolution) using the `interp_like` function from `xarray`.
@@ -70,25 +68,24 @@ Use the following code to open a file and view its contents.
 ```python
 import xarray as xr
 
-# Define constants for your region of interest
-LON_MIN, LON_MAX = -83.0, -33.0
-LAT_MIN, LAT_MAX = -55.0, 13.0
-
 # Open the generated NetCDF file
-file_path = 'ainpp_south_america_2023030100.v01.nc'
+file_path = 'ainpp_latin_america_20240101*.v01.nc'
 try:
-    merged_ds = xr.open_dataset(file_path)
+    ds = ds = xr.open_mfdataset(
+        file_path
+    )
+    ds = ds.sum(dim='time').compute()
 
     # Explore the dataset's structure
     print("Dataset Structure:")
-    print(merged_ds)
+    print(ds)
 
     # See the available data variables
     print("\nAvailable data variables:")
-    print(list(merged_ds.data_vars))
+    print(list(ds.data_vars))
 
     # Access the data for a specific variable (e.g., IMERG)
-    imerg_data = merged_ds['imerg_early']
+    imerg_data = ds['imerg_early']
     print("\nDimensions and Coordinates of 'imerg_early' variable:")
     print(imerg_data)
 
@@ -98,86 +95,81 @@ except FileNotFoundError:
 
 ### 4.2. Spatial Visualization (Plotting Maps)
 
-The following example plots a precipitation map for the `cptec_merge` variable.
+The following example plots a precipitation map for the `all` variables.
 
 ```python
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 
-# Assuming 'merged_ds' is already loaded from the previous step
-if 'merged_ds' in locals():
-    # Select the variable to plot
-    data_to_plot = merged_ds['cptec_merge']
+PRECIP_BOUNDS = [1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 600.0]
+PRECIP_COLORS_DAILY = [
+    '#f7fbff', 
+    '#deebf7',
+    '#c6dbef',
+    '#9ecae1',
+    '#6baed6',
+    '#4292c6',
+    '#2171b5',
+    '#08519c',
+    '#08306b'  
+]
 
-    # Create the figure and axes with a map projection
-    fig = plt.figure(figsize=(8, 10))
-    ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
+cmap_daily = mcolors.ListedColormap(PRECIP_COLORS_DAILY, name='DailyPrecip')
+cmap_daily.set_under('none')
+cmap_daily.set_over('#041f5b')  
+norm_daily = mcolors.BoundaryNorm(PRECIP_BOUNDS, cmap_daily.N - 1, clip=False)
 
-    # Set the map extent
-    ax.set_extent([LON_MIN, LON_MAX, LAT_MIN, LAT_MAX], crs=ccrs.PlateCarree())
+fig, axs = plt.subplots(2, 3, figsize=(15, 10), subplot_kw={'projection': ccrs.PlateCarree()})
 
-    # Plot the data
-    # 'cmap' defines the color palette (e.g., 'viridis', 'jet', 'Blues')
-    im = data_to_plot.plot(
+variables = [
+    'imerg_early',
+    'gsmap_nrt',
+    'gsmap_now',
+    'gsmap_mvk',
+    'cptec_merge',
+    'rain_gauge'
+]
+
+titles = [
+    'IMERG Early',
+    'GSMaP NRT',
+    'GSMaP Now',
+    'GSMaP MVK',
+    'CPTEC Merge',
+    'Rain Gauge'
+]
+
+for i, var in enumerate(variables):
+    ax = axs[i // 3, i % 3]
+    ds[var].plot.pcolormesh(
         ax=ax,
         transform=ccrs.PlateCarree(),
-        cmap='viridis',
-        cbar_kwargs={'label': 'Precipitation (mm/hr)'}
+        cmap=cmap_daily,
+        norm=norm_daily,
+        shading='auto',  # Use 'auto' or 'gouraud' or 'nearest'
+        zorder=2,
+        add_colorbar=False,
     )
-
-    # Add geographic features
+    
+    ax.set_title(f"{titles[i]}", y=1.05, fontsize=12)
+    ax.set_title(date, loc='right', fontsize=8)
+    ax.coastlines()
+    ax.add_feature(cfeature.BORDERS)
+    # ax.add_feature(cfeature.LAND)
     ax.add_feature(cfeature.COASTLINE)
-    ax.add_feature(cfeature.BORDERS, linestyle=':')
-    ax.add_feature(cfeature.STATES, linestyle=':')
+    # decrease the size of colorbar
+    cbar = plt.colorbar(ax.collections[0], ax=ax, orientation='horizontal', pad=0.05, aspect=50)
+    cbar.set_label('Precipitation (mm/d)')
 
-    # Add gridlines
-    ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False)
 
-    # Add a title
-    ax.set_title('Estimated Precipitation from MERGE\n2023-03-01 00:00 UTC', fontsize=14)
+# remove hspace
+plt.subplots_adjust(hspace=0.1, wspace=0.1)
 
-    plt.show()
+plt.show()
 ```
 
-Belew is presented an example plot of all variables:
+Below is presented an example plot of all variables:
 
-![alt text](./images/ainpp_south_america_2018010105.v01.png "Example plot of all variables")
-
-
-
-### 4.3. Spatial and Temporal Analysis
-
-You can perform various analyses, such as calculating the difference between products or the average precipitation over an area.
-
-#### Example: Difference between IMERG and Interpolated Rain Gauge
-
-This code calculates and plots the difference (bias) between the IMERG satellite estimate and the interpolated rain gauge observation.
-
-```python
-if 'merged_ds' in locals() and 'imerg_early' in merged_ds and 'rain_gauge' in merged_ds:
-    # Calculate the difference
-    bias = merged_ds['imerg_early'] - merged_ds['rain_gauge']
-
-    # Plot the bias map
-    fig = plt.figure(figsize=(8, 10))
-    ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
-    ax.set_extent([LON_MIN, LON_MAX, LAT_MIN, LAT_MAX], crs=ccrs.PlateCarree())
-
-    # Use a diverging colormap (e.g., 'coolwarm', 'bwr', 'RdBu')
-    bias.plot(
-        ax=ax,
-        transform=ccrs.PlateCarree(),
-        cmap='RdBu',
-        cbar_kwargs={'label': 'Precipitation Difference (IMERG - Gauge) (mm/hr)'}
-    )
-
-    ax.add_feature(cfeature.COASTLINE)
-    ax.add_feature(cfeature.BORDERS, linestyle=':')
-    ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False)
-    ax.set_title('Bias between IMERG and Rain Gauges', fontsize=14)
-
-    plt.show()
-```
-
-Blue areas indicate that IMERG underestimated the rain compared to the gauges, while red areas indicate an overestimation.
+![alt text](./images/merged_20240101.png "Example plot of all variables")
